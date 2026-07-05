@@ -1,0 +1,32 @@
+# Runs the kit's node:test suite on every push and PR. index.js itself is
+# dependency-free — consumers (Weather, etc.) even run this same test.mjs
+# from node_modules in their own CI — but the vendor CLI shim (bin/vendor.mjs)
+# imports @jfs/vendor-cli, so an install step is required before the tests.
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Syntax-check the shipped module
+        run: node --check index.js
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run tests
+        run: npm test
