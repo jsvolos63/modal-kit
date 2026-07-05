@@ -1,0 +1,45 @@
+{
+  "name": "@jfs/modal-kit",
+  "version": "0.1.1",
+  "description": "Shared, dependency-free accessible-dialog plumbing for the JFS family of buildless static PWAs: focus trap + focus save/restore, iOS-safe position:fixed scroll-lock, a central Escape stack, marker-guarded inert/aria-hidden siblings, bfcache cleanup, and an opt-in history sentinel so the Back button closes the topmost dialog.",
+  "type": "module",
+  "license": "MIT",
+  "author": "jsvolos63",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jsvolos63/modal-kit.git"
+  },
+  "homepage": "https://github.com/jsvolos63/modal-kit#readme",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "bin": {
+    "jfs-modal-kit-vendor": "bin/vendor.mjs"
+  },
+  "files": [
+    "index.js",
+    "bin"
+  ],
+  "scripts": {
+    "test": "node --test test.mjs test-vendor.mjs"
+  },
+  "dependencies": {
+    "@jfs/vendor-cli": "github:jsvolos63/vendor-cli#4370d4f7cc05658b535a55ffc73dbbcb80beb906"
+  },
+  "devDependencies": {
+    "jsdom": "^25.0.0"
+  },
+  "keywords": [
+    "modal",
+    "dialog",
+    "focus-trap",
+    "scroll-lock",
+    "accessibility",
+    "a11y"
+  ]
+}
