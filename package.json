@@ -1,6 +1,6 @@
 {
   "name": "@jfs/modal-kit",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Shared, dependency-free accessible-dialog plumbing for the JFS family of buildless static PWAs: focus trap + focus save/restore, iOS-safe position:fixed scroll-lock, a central Escape stack, marker-guarded inert/aria-hidden siblings, bfcache cleanup, and an opt-in history sentinel so the Back button closes the topmost dialog.",
   "type": "module",
   "license": "MIT",

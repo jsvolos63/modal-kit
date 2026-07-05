@@ -42,6 +42,21 @@ let savedScrollY = 0;
 // is recognized as our own and doesn't double-close.
 let expectOwnPopstate = false;
 
+// Scroll-lock is reference-counted across every OPEN dialog that asked for it —
+// independent of the Escape/history stack. Without a dedicated count, a
+// `scrollLock:false` dialog closing last could leave the body frozen, or one
+// opening second could suppress a `scrollLock:true` dialog's lock. We remember
+// the doc + class used to lock so the unlock (possibly triggered by a different
+// dialog or pagehide) reverses exactly that.
+let scrollLockCount = 0;
+let lockedDoc = null;
+let lockedClass = null;
+
+// History-sentinel sessions in push order, so a programmatic close only pops the
+// browser history entry when it's the topmost sentinel (popping a buried one
+// would desync the guard from the visible dialog).
+const historyStack = [];
+
 // The standard focusable set, plus contenteditable and positive-tabindex nodes.
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -63,16 +78,44 @@ function winOf(el) {
   return (el.ownerDocument && el.ownerDocument.defaultView) || globalThis.window || globalThis;
 }
 
+// Run a user-supplied lifecycle callback without letting it escape. A throwing
+// onOpen/onClose must not propagate out of a shared document/window handler
+// (Escape, popstate) or out of open()/close() and leave the page with scroll
+// still locked or siblings still inert.
+function safeCall(fn, arg) {
+  if (typeof fn !== 'function') return;
+  try {
+    fn(arg);
+  } catch (err) {
+    // Surface for debugging without breaking modal teardown.
+    if (typeof console !== 'undefined' && console.error) {
+      console.error('[modal-kit] lifecycle callback threw:', err);
+    }
+  }
+}
+
 function isVisible(el) {
-  // Layout-free visibility check: honors `hidden` ancestors, `aria-hidden`, and
-  // computed display/visibility. Deliberately does NOT use offsetParent/size so
-  // it stays correct under a layout-less test DOM (jsdom) as well as browsers.
-  if (typeof el.closest === 'function' && el.closest('[hidden]')) return false;
+  // Layout-free visibility check: honors `aria-hidden`, the element's own
+  // computed `visibility` (which inherits), and — crucially — `display:none`
+  // (and the `hidden` attribute, which is UA `display:none`) ANYWHERE up the
+  // ancestor chain. `display` doesn't inherit, so an element inside a
+  // `display:none` wrapper has its own `display:block` and would otherwise slip
+  // through, letting the Tab trap focus an unrendered control. Deliberately
+  // avoids offsetParent/size so it stays correct under a layout-less test DOM
+  // (jsdom) as well as in real browsers.
   if (el.getAttribute && el.getAttribute('aria-hidden') === 'true') return false;
   const view = winOf(el);
-  if (typeof view.getComputedStyle === 'function') {
-    const s = view.getComputedStyle(el);
-    if (s && (s.display === 'none' || s.visibility === 'hidden')) return false;
+  const getCS = typeof view.getComputedStyle === 'function' ? (n) => view.getComputedStyle(n) : null;
+  if (getCS) {
+    const own = getCS(el);
+    if (own && own.visibility === 'hidden') return false;
+  }
+  for (let node = el; node && node.nodeType === 1; node = node.parentElement) {
+    if (node.hasAttribute && node.hasAttribute('hidden')) return false;
+    if (getCS) {
+      const s = getCS(node);
+      if (s && s.display === 'none') return false;
+    }
   }
   return true;
 }
@@ -119,36 +162,56 @@ function wireGlobals(doc) {
         expectOwnPopstate = false;
         return;
       }
-      const top = topSession();
-      // We already navigated (the user popped our sentinel), so close without
-      // pushing another history.back().
-      if (top && top.history) top.requestClose(true);
+      // The user popped the topmost sentinel — close the dialog that pushed it
+      // (not just whatever is visually on top), and don't push another back().
+      const sess = historyStack[historyStack.length - 1];
+      if (sess) {
+        historyStack.pop();
+        sess.requestClose(true);
+      }
     });
 
     // bfcache safety: if the page is frozen with a dialog open, make sure the
     // scroll-lock class/offset can't survive a restore and freeze the page.
     view.addEventListener('pagehide', () => {
-      if (openStack.length && doc.body) {
-        doc.body.classList.remove(openStack[0].scrollLockClass);
-        doc.body.style.top = '';
-      }
+      forceUnlockScroll();
     });
   }
 }
 
 // ───────────────────────── scroll lock (reference-counted) ──────────────────
 
-function lockScroll(doc, cls) {
-  const view = doc.defaultView || globalThis.window;
-  savedScrollY = (view && (view.scrollY || view.pageYOffset)) || 0;
-  doc.body.classList.add(cls);
-  // Set via CSSOM (not an inline style attribute), so a strict CSP style-src
-  // without 'unsafe-inline' still allows it.
-  doc.body.style.top = `-${savedScrollY}px`;
+function acquireScrollLock(doc, cls) {
+  if (scrollLockCount === 0) {
+    lockedDoc = doc;
+    lockedClass = cls;
+    const view = doc.defaultView || globalThis.window;
+    savedScrollY = (view && (view.scrollY || view.pageYOffset)) || 0;
+    doc.body.classList.add(cls);
+    // Set via CSSOM (not an inline style attribute), so a strict CSP style-src
+    // without 'unsafe-inline' still allows it.
+    doc.body.style.top = `-${savedScrollY}px`;
+  }
+  scrollLockCount++;
 }
 
-function unlockScroll(doc, cls) {
-  doc.body.classList.remove(cls);
+function releaseScrollLock() {
+  if (scrollLockCount === 0) return;
+  scrollLockCount--;
+  if (scrollLockCount === 0) forceUnlockScroll();
+}
+
+// Reverse whatever acquireScrollLock did, using the doc/class it locked with
+// (the releasing dialog — or pagehide — may not be the one that locked).
+function forceUnlockScroll() {
+  if (!lockedDoc || !lockedDoc.body) {
+    scrollLockCount = 0;
+    lockedDoc = null;
+    lockedClass = null;
+    return;
+  }
+  const doc = lockedDoc;
+  doc.body.classList.remove(lockedClass);
   doc.body.style.top = '';
   const view = doc.defaultView || globalThis.window;
   if (view && typeof view.scrollTo === 'function') {
@@ -158,6 +221,9 @@ function unlockScroll(doc, cls) {
       // A layout-less test DOM may not implement scrollTo — harmless to skip.
     }
   }
+  scrollLockCount = 0;
+  lockedDoc = null;
+  lockedClass = null;
 }
 
 // ───────────────────────── inert siblings (marker-guarded) ──────────────────
@@ -331,14 +397,17 @@ export function createModal(el, options = {}) {
     openStack.push(session);
     wireGlobals(doc);
 
-    if (opts.scrollLock && openStack.length === 1) lockScroll(doc, opts.scrollLockClass);
+    if (opts.scrollLock) acquireScrollLock(doc, opts.scrollLockClass);
     if (opts.inertSiblings) setSiblingsInert(el, true);
 
     show();
 
     if (opts.trapFocus) el.addEventListener('keydown', onKeydown);
     if (opts.closeOnBackdrop || opts.shouldCloseOnPointer) el.addEventListener('click', onPointerDown);
-    if (opts.history) pushHistorySentinel(doc.defaultView && doc.defaultView.history);
+    if (opts.history) {
+      pushHistorySentinel(doc.defaultView && doc.defaultView.history);
+      historyStack.push(session);
+    }
 
     const focusTarget = resolveFocusTarget();
     const doFocus = () => {
@@ -349,7 +418,7 @@ export function createModal(el, options = {}) {
     if (opts.focusDelay > 0) setTimeout(doFocus, opts.focusDelay);
     else doFocus();
 
-    if (typeof opts.onOpen === 'function') opts.onOpen({ el });
+    safeCall(opts.onOpen, { el });
   }
 
   function close(fromHistory = false) {
@@ -365,24 +434,35 @@ export function createModal(el, options = {}) {
 
     hide();
 
-    if (opts.scrollLock && openStack.length === 0) unlockScroll(doc, opts.scrollLockClass);
+    if (opts.scrollLock) releaseScrollLock();
 
     if (session.prevFocus && doc.contains(session.prevFocus) && typeof session.prevFocus.focus === 'function') {
       session.prevFocus.focus({ preventScroll: true });
     }
     session.prevFocus = null;
 
-    // Pop our own sentinel unless this close was itself triggered by a history
-    // pop (in which case the browser already navigated).
+    // Reconcile the browser history sentinel — unless this close was itself
+    // triggered by a history pop (the popstate handler already navigated and
+    // removed the entry).
     if (opts.history && !fromHistory) {
-      const hist = doc.defaultView && doc.defaultView.history;
-      if (hist && typeof hist.back === 'function') {
-        expectOwnPopstate = true;
-        hist.back();
+      const hIdx = historyStack.indexOf(session);
+      if (hIdx !== -1) {
+        const isTopSentinel = hIdx === historyStack.length - 1;
+        historyStack.splice(hIdx, 1);
+        // Only pop the browser entry when it's the topmost sentinel; popping a
+        // buried one would rewind the wrong dialog. A buried sentinel is left as
+        // an inert history entry (a later stray Back is absorbed as a no-op).
+        if (isTopSentinel) {
+          const hist = doc.defaultView && doc.defaultView.history;
+          if (hist && typeof hist.back === 'function') {
+            expectOwnPopstate = true;
+            hist.back();
+          }
+        }
       }
     }
 
-    if (typeof opts.onClose === 'function') opts.onClose({ el });
+    safeCall(opts.onClose, { el });
   }
 
   session.requestClose = close;
@@ -394,7 +474,11 @@ export function createModal(el, options = {}) {
  *  re-wire on next open). Not part of the production surface. */
 export function _resetModalsForTest() {
   openStack.length = 0;
+  historyStack.length = 0;
   globalsWired = false;
   savedScrollY = 0;
   expectOwnPopstate = false;
+  scrollLockCount = 0;
+  lockedDoc = null;
+  lockedClass = null;
 }

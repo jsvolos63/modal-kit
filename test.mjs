@@ -322,6 +322,72 @@ test('onOpen and onClose fire with the element', () => {
 
 // ───────────────────────── getFocusable ─────────────────────────
 
+// ───────────────────────── hardening ─────────────────────────
+
+test('scroll-lock never gets stuck when a scrollLock:false modal closes last', () => {
+  const { document } = setup(`
+    <div id="a"><button>a</button></div>
+    <div id="b"><button>b</button></div>`);
+  const body = document.body;
+  const a = createModal(document.querySelector('#a'), { scrollLock: true });
+  const b = createModal(document.querySelector('#b'), { scrollLock: false });
+  a.open();
+  b.open();
+  a.close();
+  b.close();
+  // The old length-gated logic left the body frozen here; the refcount unlocks.
+  assert.equal(body.classList.contains('modal-open'), false);
+  assert.equal(body.style.top, '');
+});
+
+test('a scrollLock:true modal opening second still locks', () => {
+  const { document } = setup(`
+    <div id="a"><button>a</button></div>
+    <div id="b"><button>b</button></div>`);
+  const body = document.body;
+  const a = createModal(document.querySelector('#a'), { scrollLock: false });
+  const b = createModal(document.querySelector('#b'), { scrollLock: true });
+  a.open();
+  assert.equal(body.classList.contains('modal-open'), false);
+  b.open();
+  assert.equal(body.classList.contains('modal-open'), true);
+  b.close();
+  assert.equal(body.classList.contains('modal-open'), false);
+  a.close();
+});
+
+test('a throwing onClose does not escape or strand scroll-lock / inert', () => {
+  const { $, document } = setup(MODAL_HTML);
+  const other = $('#other');
+  const modal = createModal($('#dialog'), { onClose: () => { throw new Error('boom'); } });
+  modal.open();
+  assert.doesNotThrow(() => modal.close());
+  assert.equal(document.body.classList.contains('modal-open'), false);
+  assert.equal(other.inert, false);
+  assert.equal($('#dialog').hidden, true);
+});
+
+test('a throwing onClose in the Escape handler does not escape the handler', () => {
+  const { document } = setup(MODAL_HTML);
+  const modal = createModal(document.querySelector('#dialog'), {
+    escClose: true,
+    onClose: () => { throw new Error('boom'); },
+  });
+  modal.open();
+  assert.doesNotThrow(() => esc(document));
+  assert.equal(modal.isOpen(), false);
+});
+
+test('getFocusable excludes controls inside a display:none ancestor', () => {
+  const { $ } = setup(`
+    <div id="dialog">
+      <div style="display:none"><button id="buried">x</button></div>
+      <button id="shown">y</button>
+    </div>`);
+  const ids = getFocusable($('#dialog')).map((n) => n.id);
+  assert.deepEqual(ids, ['shown']);
+});
+
 test('getFocusable returns visible focusables in order and skips hidden/disabled', () => {
   const { $, document } = setup(`
     <div id="dialog">
