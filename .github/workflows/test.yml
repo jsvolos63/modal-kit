@@ -30,3 +30,30 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+  # Require a package.json version bump on any PR that changes the shipped
+  # module. Consumers pin by commit SHA and releases tag by version; a module
+  # change without a bump ships two different SHAs under one version label.
+  version-bump:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Fail if the shipped module changed without a version bump
+        run: |
+          BASE="origin/${GITHUB_BASE_REF}"
+          if git diff --quiet "$BASE...HEAD" -- index.js; then
+            echo "shipped module unchanged - no bump required"
+            exit 0
+          fi
+          git show "$BASE:package.json" > /tmp/base-package.json
+          BASE_VERSION=$(node -p "require('/tmp/base-package.json').version")
+          HEAD_VERSION=$(node -p "require('./package.json').version")
+          if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
+            echo "::error::index.js changed but package.json version is still ${HEAD_VERSION} - bump it"
+            exit 1
+          fi
+          echo "version bumped: ${BASE_VERSION} -> ${HEAD_VERSION}"
