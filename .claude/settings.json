@@ -6,6 +6,8 @@
       "Bash(npm run vendor:check)",
       "Bash(npm run version:check)",
       "Bash(npm run lint)",
+      "Bash(npm run check:syntax)",
+      "Bash(npm run check:vendored)",
       "mcp__github__pull_request_read",
       "mcp__github__actions_list",
       "mcp__github__actions_get",
